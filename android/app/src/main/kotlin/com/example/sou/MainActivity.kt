@@ -15,7 +15,8 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 if (call.method == "getSMS") {
-                    val smsList = getSMS()
+                    val lastId = call.argument<String>("lastId")
+                    val smsList = getSMS(lastId)
                     result.success(smsList)
                 } else {
                     result.notImplemented()
@@ -23,55 +24,45 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    private fun getSMS(): List<Map<String, String>> {
+    private fun getSMS(lastId: String?): List<Map<String, String>> {
         val smsList = mutableListOf<Map<String, String>>()
-
         try {
             val uri = Uri.parse("content://sms/inbox")
 
             val cursor = contentResolver.query(
-                uri,
-                null,
-                null,
+                Uri.parse("content://sms/inbox"),
+                arrayOf("_id", "address", "body", "date", "sub_id"),
+                null,  // no sub_id filter
                 null,
                 "date DESC"
             )
 
             if (cursor != null) {
+                val idIndex = cursor.getColumnIndex("_id")
                 val addressIndex = cursor.getColumnIndex("address")
                 val bodyIndex = cursor.getColumnIndex("body")
                 val dateIndex = cursor.getColumnIndex("date")
 
-                if (addressIndex == -1 || bodyIndex == -1 || dateIndex == -1) {
-                    cursor.close()
-                    return smsList
-                }
-
-                val currentTime = System.currentTimeMillis()
-
+                var count = 0
                 while (cursor.moveToNext()) {
-                    val sender = cursor.getString(addressIndex)
-                    val body = cursor.getString(bodyIndex)
-                    val time = cursor.getLong(dateIndex)
+                    val id = cursor.getString(idIndex)
+                    val sender = cursor.getString(addressIndex) ?: "Unknown"
+                    val body = cursor.getString(bodyIndex) ?: ""
+                    val date = cursor.getLong(dateIndex)
 
-                    //if (currentTime - time <= 2 * 60 * 1000) {
-                        android.util.Log.e("SMS_READER", "INSTANT: $sender | $body")
-                        smsList.add(
-                            mapOf(
-                                "sender" to sender,
-                                "body" to body
-                            )
-                        )
-                    //}
+                    smsList.add(mapOf(
+                        "id" to id,
+                        "sender" to sender,
+                        "body" to body,
+                        "date" to date.toString()
+                    ))
                 }
-
                 cursor.close()
             }
 
         } catch (e: Exception) {
             android.util.Log.e("SMS_READER", "ERROR: ${e.message}")
         }
-
         return smsList
     }
 }

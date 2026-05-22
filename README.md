@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # sou
 
 A new Flutter project.
@@ -15,7 +14,5 @@ A few resources to get you started if this is your first Flutter project:
 
 For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
-=======
-# Startup
->>>>>>> 276bf3bff1a5790925704c445c215d2cd4c9ff41
+samples, guidance on mobile development, and a full API reference
+
