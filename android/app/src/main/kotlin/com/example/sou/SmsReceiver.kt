@@ -28,6 +28,7 @@ class SmsReceiver : BroadcastReceiver() {
 
                 eventSink?.success(
                     mapOf(
+                        "id" to System.currentTimeMillis().toString(),
                         "sender" to sender,
                         "body" to body,
                         "date" to System.currentTimeMillis().toString()

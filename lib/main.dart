@@ -2,21 +2,25 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'dart:ui';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint("GLOBAL ERROR: $error");
+    return true;
+  };
   runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(home: SmsPage());
-  }
+  Widget build(BuildContext context) => const MaterialApp(home: SmsPage());
 }
 
 class SmsPage extends StatefulWidget {
+  const SmsPage({super.key});
   @override
   State<SmsPage> createState() => _SmsPageState();
 }
@@ -26,71 +30,88 @@ class _SmsPageState extends State<SmsPage> {
 
   List<Map<String, dynamic>> smsList = [];
   Timer? _timer;
-  String? _lastId; // track last seen SMS id
+  String _lastDate = "0";
+  bool _loading = false;
 
   @override
   void initState() {
     super.initState();
-    _initSms();
+    _init();
   }
 
-  Future<void> _initSms() async {
-    final status = await Permission.sms.request();
-    debugPrint("SMS permission: $status");
+  Future<void> _init() async {
+    final smsStatus = await Permission.sms.request();
+    final phoneStatus = await Permission.phone.request();
 
-    if (status.isGranted) {
-      // Get initial last ID without showing history
-      await _initLastId();
-      // Start polling every 3 seconds
-      _timer = Timer.periodic(const Duration(seconds: 3), (_) {
-        debugPrint("Polling... lastId: $_lastId");  
-        _checkNewSms();
-      });
+    if (!smsStatus.isGranted || !phoneStatus.isGranted) {
+      await openAppSettings();
+      return;
+    }
+
+    await _initLastDate();
+
+    _timer = Timer.periodic(const Duration(seconds: 2), (_) => _checkNewSms());
+  }
+
+  Future<void> _initLastDate() async {
+    try {
+      // Pass null so Kotlin uses the 24h init branch
+      final List result = await platform.invokeMethod('getSMS', {"lastId": null});
+      if (result.isEmpty) {
+        // No SMS in last 24h — anchor to now so we only get future messages
+        _lastDate = DateTime.now().millisecondsSinceEpoch.toString();
+        return;
+      }
+
+      final sms = result.map((e) => Map<String, dynamic>.from(e)).toList();
+      sms.sort((a, b) => int.parse(b['date']).compareTo(int.parse(a['date'])));
+
+      _lastDate = sms.first['date'].toString();
+      debugPrint("Initialized _lastDate to: $_lastDate");
+
+      // Show initial SMS in UI
+      if (mounted) setState(() => smsList = sms);
+    } catch (e) {
+      debugPrint("INIT ERROR: $e");
+      _lastDate = DateTime.now().millisecondsSinceEpoch.toString();
     }
   }
-  String _lastTimestamp = "0";
-
-  Future<void> _initLastId() async {
-    // Subtract 5 minutes to catch SMS that arrived just before app started
-    _lastTimestamp = (DateTime.now().millisecondsSinceEpoch - (5 * 60 * 1000)).toString();
-    debugPrint("Watching SMS from timestamp: $_lastTimestamp");
-  }
-
 
   Future<void> _checkNewSms() async {
+    if (_loading) return;
+    _loading = true;
+
     try {
-      final List result = await platform.invokeMethod('getSMS', {"lastId": null});
+      debugPrint("Polling since: $_lastDate");
+      final List result = await platform.invokeMethod('getSMS', {"lastId": _lastDate});
 
-      for (final sms in result) {
-        debugPrint("SMS id:${sms['id']} date:${sms['date']} sender:${sms['sender']}");
-      }
+      if (result.isNotEmpty) {
+        final sms = result.map((e) => Map<String, dynamic>.from(e)).toList();
+        sms.sort((a, b) => int.parse(b['date']).compareTo(int.parse(a['date'])));
 
-      final newSms = result.where((sms) {
-        final date = int.tryParse(sms['date'] ?? '0') ?? 0;
-        return date > int.parse(_lastTimestamp);
-      }).toList();
+        // Advance the cursor to the latest seen date
+        final latestDate = int.parse(sms.first['date'].toString());
+        final currentLast = int.parse(_lastDate);
+        if (latestDate > currentLast) {
+          _lastDate = latestDate.toString();
+        }
 
-      debugPrint("Polling... total: ${result.length}, new: ${newSms.length}");
+        if (mounted) {
+          setState(() {
+            for (final sm in sms) {
+              final alreadyExists = smsList.any((s) => s['id'] == sm['id']);
+              if (!alreadyExists) smsList.insert(0, sm);
+            }
+          });
+        }
 
-      if (newSms.isNotEmpty) {
-        setState(() {
-          for (final sms in newSms) {
-            smsList.insert(0, Map<String, dynamic>.from(sms));
-          }
-        });
-        _lastTimestamp = newSms.first['date'];
+        debugPrint("Added ${sms.length} new messages, cursor now: $_lastDate");
       }
     } catch (e) {
-      debugPrint("Error: $e");
-    }
-  }
-  String _formatDate(String dateStr) {
-    try {
-      final date = DateTime.fromMillisecondsSinceEpoch(int.parse(dateStr));
-      return "${date.day}/${date.month}/${date.year} "
-          "${date.hour}:${date.minute.toString().padLeft(2, '0')}";
-    } catch (_) {
-      return '';
+      debugPrint("POLL ERROR: $e");
+    } finally {
+      // finally guarantees _loading resets even if an exception occurs
+      _loading = false;
     }
   }
 
@@ -100,80 +121,43 @@ class _SmsPageState extends State<SmsPage> {
     super.dispose();
   }
 
+  String _format(String ts) {
+    try {
+      final d = DateTime.fromMillisecondsSinceEpoch(int.parse(ts));
+      return "${d.day}/${d.month}/${d.year} ${d.hour}:${d.minute.toString().padLeft(2, '0')}";
+    } catch (_) {
+      return "";
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Live SMS"),
+        title: const Text("SMS Reader"),
         actions: [
-          // Live indicator
-          Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: Row(
-              children: [
-                const Icon(Icons.circle, size: 10, color: Colors.green),
-                const SizedBox(width: 4),
-                const Text("Live", style: TextStyle(fontSize: 12)),
-              ],
-            ),
-          ),
           IconButton(
-            icon: const Icon(Icons.delete_sweep),
+            icon: const Icon(Icons.delete),
             onPressed: () => setState(() => smsList.clear()),
           ),
         ],
       ),
       body: smsList.isEmpty
-          ? const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.sms, size: 64, color: Colors.grey),
-                  SizedBox(height: 16),
-                  Text(
-                    "Waiting for new SMS...",
-                    style: TextStyle(color: Colors.grey, fontSize: 16),
-                  ),
-                  SizedBox(height: 8),
-                  Text(
-                    "Checking every 3 seconds",
-                    style: TextStyle(color: Colors.grey, fontSize: 12),
-                  ),
-                ],
-              ),
-            )
-          : ListView.separated(
+          ? const Center(child: Text("Waiting for SMS..."))
+          : ListView.builder(
               itemCount: smsList.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
               itemBuilder: (context, index) {
                 final sms = smsList[index];
                 return ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: Colors.blue.shade100,
-                    child: Text(
-                      (sms['sender'] ?? '?')
-                          .toString()
-                          .substring(0, 1)
-                          .toUpperCase(),
-                      style: const TextStyle(color: Colors.blue),
-                    ),
-                  ),
-                  title: Text(
-                    sms['sender'] ?? '',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
+                  title: Text(sms['sender'] ?? ''),
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(sms['body'] ?? ''),
-                      Text(
-                        _formatDate(sms['date'] ?? ''),
-                        style: const TextStyle(
-                            fontSize: 11, color: Colors.grey),
-                      ),
+                      Text(_format(sms['date'] ?? '0'),
+                          style: const TextStyle(fontSize: 12)),
                     ],
                   ),
-                  isThreeLine: true,
                 );
               },
             ),
