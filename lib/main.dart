@@ -42,8 +42,9 @@ class _SmsPageState extends State<SmsPage> {
   Future<void> _init() async {
     final smsStatus = await Permission.sms.request();
     final phoneStatus = await Permission.phone.request();
+    final batteryStatus = await Permission.ignoreBatteryOptimizations.request();
 
-    if (!smsStatus.isGranted || !phoneStatus.isGranted) {
+    if (!smsStatus.isGranted || !phoneStatus.isGranted || !batteryStatus.isGranted) {
       await openAppSettings();
       return;
     }
